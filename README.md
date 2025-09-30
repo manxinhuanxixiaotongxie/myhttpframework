@@ -296,6 +296,190 @@ TCP/IP模型：ARP协议被视为网络接口层的一部分，因为他为IP协
 
 
 
+======================LVS三种模型推导
+
+
+
+
+
+
+========================LVS DR模型过程========================
+
+
+arp_ignore和arp_announce的详细解释：
+
+arg_ignore:控制Linux内核在接收到arp请求时是否响应以及在什么条件下响应
+0：默认值
+内核会响应任何目标IP地址是本机的arp请求 无论该IP是否绑定在接受arp请求的网卡上
+
+1.内核只响应目标IP是本机的arp请求，且该IP地址绑定在arp请求的网卡上 适用于避免arp冲突的场景
+
+    仅在目标 IP 是本地接口配置的 IP 且请求的目标地址与接收接口匹配时，才响应 ARP 请求。
+    
+    例如，如果 VIP 配置在回环接口（lo）上，而 ARP 请求是通过物理网卡（如 eth0）接收的，Real Server 不会响应该请求。
+    但如果 VIP 配置在物理网卡（如 eth0）上，Real Server 可能会响应 ARP 请求。
+
+2.内核只响应目标IP是本机的arp请求，且该IP地址绑定在arp请求到达的网卡上 并且该网卡是请求到达的网卡 适用于多网卡环境
+
+    仅在目标 IP 是本地接口配置的 IP 且请求的目标地址与接收接口匹配，并且该接口是最佳路由接口时，才响应 ARP 请求。
+    
+    这是更严格的条件，除了要求目标 IP 和接收接口匹配外，还要求该接口是内核路由表中到达目标 IP 的最佳路由接口。
+    如果 VIP 配置在回环接口（lo）上，而 ARP 请求是通过物理网卡（如 eth0）接收的，Real Server 仍然不会响应该请求。
+
+3.内核不会响应任何arp请求 适用于完全禁用arp响应的场景
+
+    使用场景：在lvs dr模型中 realServer上的VIP通常绑定在lo接口上，而不是物理网卡，通过设置arp_ignore=1，确保realServer只响应绑定在物理网卡上
+    的IP地址的arp请求，避免了VIP的arp冲突
+
+
+arp_announce:控制Linux内核在发送arp请求时,如何选择源IP地址进行广播
+0：默认值
+内核会使用任意本地IP地址作为源IP地址发送arp请求，可能会选择与目标网络不匹配的IP地址 适用于普通网络环境
+1.内核会尝试使用与目标网络匹配的本地 IP 地址作为源 IP 地址发送 ARP 请求。如果没有匹配的 IP 地址，则使用任意本地 IP 地址。
+
+    内核会尝试使用与目标网络匹配的本地 IP 地址作为源 IP 地址发送 ARP 请求。如果没有匹配的 IP 地址，则使用任意本地 IP 地址。
+    
+    这种配置会优先选择与目标网络匹配的 IP 地址，但如果没有匹配的 IP 地址，可能会选择其他本地 IP 地址作为源 IP。
+
+2.内核只使用与目标网络匹配的本地 IP 地址作为源 IP 地址发送 ARP 请求。如果没有匹配的 IP 地址，则不发送 ARP 请求。
+
+    内核只使用与目标网络匹配的本地 IP 地址作为源 IP 地址发送 ARP 请求。如果没有匹配的 IP 地址，则不发送 ARP 请求。
+    
+    这种配置是更严格的，只有在目标网络匹配时才会发送 ARP 请求，避免发送错误的 ARP 广播。
+
+
+
+
+1.客户端发送请求到虚拟IP（VIP），VIP是负载均衡器的IP地址，通常配置在LVS的网卡上
+2.LVS接受请求，LVS监听VIP 并接受到客户端的请求，根据负载均衡算法（rr,wrr,lc,wlc等）决定将请求分发到哪个realServer
+3.LVS修改数据包  1.不改变请求的目标地址，请求的目标地址仍然是VIP 2.修改的是数据包MAC地址（下一个节点） 将目标mac地址改成选定的realServer的mac地址
+4.数据包打包realServer 数据包通过二层网络直接到达realServer realServer网卡配置了vip(通常是通过绑定VIP的方式)，因此可以接受目标IP为VIP的数据包
+5.realServer处理请求 realServer接受到数据包后，处理请求，并生成响应数据 响应数据的目标地址是客户端的IP地址，源地址是VIP 数据不经过VIP
+
+配置:在lvs上，vip是id主ip，负责接受客户端的请求
+在realServer上，VIP通常以别名的形式绑定到网卡（环回接口）
+
+注意：realServer上的vip必须配置为不可的ARP（防止realServer响应arp请求）
+echo 1 > /proc/sys/net/ipv4/conf/lo/arp_ignore
+echo 2 > /proc/sys/net/ipv4/conf/lo/arp_announce
+
+echo 1 > /proc/sys/net/ipv4/conf/all/arp_ignore
+echo 2 > /proc/sys/net/ipv4/conf/all/arp_announce
+
+LVS修改数据包的MAC地址，不修改IP地址
+LVS的网卡和realServer的网卡必须在同一个二层网络中（同一个交换机）
+
+realServer：响应数据直接返回给客户端 绕过LVS 客户端认为响应的数据来自VIP 而不是realServer
+
+DR优点：
+高性能：响应数据不经过LVS 减轻了LVS的网络负载
+低延迟：realServer直接返回响应数据 减少中间环节
+支持大流量：适合处理高并发和大流量场景
+
+限制：
+1.LVS的网卡与realServer的网卡必须在同一个二层网络中
+2.配置复杂：需要在realServer配置VIP 并且禁用ARP
+3.不支持NAT VIP不会发生变化 无法进行网络地址转换
+
+总结：
+1.客户端发送请求到VIP（负载均衡器 ）
+2.LVS修改数据包的MAC地址 将请求转发到选定的realServer
+3.realServer处理请求 并生成响应数据
+
+问题：数据包已经到了负载均衡器这台机器，数据包已经被接受，从通信的角度上来讲，mac地址已经是负载均衡器所在机器的VIP的网卡的mac地址了，为什么
+还能被转发？
+
+在DR模型中：
+1.客户端请求的目标IP是VIP
+2.数据包到达LVS 目标MAC地址是LVS的网卡MAC地址（因为arp协议讲VIP映射到了LVS的网卡mac地址）
+
+按照常规的网络栈逻辑：数据包到目标mac地址是本机网卡的mac地址时，数据包会被内核认为是发往本机的，进入本机的网络协议栈进行处理
+然而在 LVS DR模型中，LVS并没有将数据包视为发往本机的，而是通过修改数据包的MAC地址，将其转发到选定的realServer
+
+
+LVS特殊处理机制：
+LVS的核心模块是通过IPVS（ip virtual server）模块实现的,ipvs是一个工作在内核的负载均衡模块，它对数据包的处理方式与普通的网络栈有所不同
+
+工作原理：
+1.IPVS工作在内核 拦截目标IP为VIP的数据包
+2.ipvs根据配置的负载均衡规则（轮询、加权轮询等） 决定将数据包转发到哪个具体的realServer
+3.在DR模型中，ipvs不修改数据包的目标ip地址，但是会修改数据包的目标mac地址，将其修改为选定的realServer的mac地址
+4.修改侯的数据包通过二层网络直接发送到realServer realServer网卡配置了
+
+为什么可以被转发：
+1.数据包到达lvs，目标MAC数据是lvs的网卡mac地址，数据包会被接受
+2.ipvs模块在内核的PREROUTING链中拦截目标IP为VIP的数据包 并且根据负载均衡规则决定如何处理数据包
+3.在DR模型中，ipvs修改数据包的目标MAC地址 将其改为选定的realServer的mac地址
+4.由于ipvs在内核中工作，他可以绕过常规的网络栈逻辑，直接操作数据包
+
+关键点：ipvs的拦截与处理
+ipvs的拦截与处理机制是实现LVS DR模型的核心
+1.ipvs在内核的NETFILTER的PREROUTING链中拦截目标IP为VIP的数据包
+2.数据包在进入本地网络协议栈之前（PREROUTING链）被ipvs处理
+3.通过修改数据包从网卡直接发送到realServer
+
+数据包的转发：虽然目标地址最初是LVS的网卡mac地址 但是ipvs修改后 目标mac地址变成了realServer的mac地址 能够通过二层网络转发到realServer
+
+为什么普通网络栈不会处理这些数据包：
+在没有ipvs的情况下 目标mac地址是本机网卡的mac地址时，数据包会被内核认为是发往本机的 进入本机的网络协议栈进行处理
+然后 ipvs在prerouting链中拦截目标IP为VIP的数据包 并且修改数据包的目标mac地址 因此这些数据包不会进入普通的网络栈，而是被IPVS转发到realServer
+
+
+realServer不是不会广播VIP的mac地址吗，lvs是怎么知道realServer的mac地址？
+
+在DR模型中，realServer不会广播vip的mac地址，因为realServer上的vip通常是配置在LO接口（环回接口）上，并且配置为不可被arp响应，避免VIP的mac地
+址被广播 那么在这种情况下lvs是如何知道realServer的mac地址的呢？
+
+arp_ignore和arp_announce的作用：
+1.arp_ignore：控制本机在接收到arp请求时的响应行为
+设置为1时，只有当请求的目标IP地址与本机某个接口的IP地址完全匹配时，才会响应arp请求
+设置为2时，只有当请求的目标IP地址与本机某个接口的IP地址匹配，并且该接口是请求到达的接口时，才会响应arp请求
+2.arp_announce：控制本机在发送arp请求时的行为
+设置为1时，本机会优先使用与目标IP地址在同一子网的接口发送arp请求
+设置为2时，本机会使用与目标IP地址在同一子网的接口发送arp请求，并且避免使用其他接口
+
+虽然realServer不会广播VIP的mac地址，但是lvs并不需要通过VIP来解析realServer的mac地址：
+lvs是通过realServer的RIP（真实IP地址）来解析realServer的mac地址的
+
+2.1 LVS 使用 RIP（Real Server IP）
+在 LVS 的配置中，每个 Real Server 都有一个唯一的 IP 地址（RIP）。
+LVS 和 Real Server 通常在同一个二层网络中（如同一个交换机）。
+LVS 可以通过 ARP 协议解析 RIP 对应的 MAC 地址。
+2.2 ARP 解析过程
+当 LVS 需要将数据包转发到某个 Real Server 时，它会查询本地的 ARP 缓存表，检查是否已经知道该 Real Server 的 MAC 地址。
+如果 ARP 缓存中没有对应的 MAC 地址，LVS 会发送 ARP 请求，询问目标 IP 地址（RIP）对应的 MAC 地址。
+Real Server 的网卡会响应 ARP 请求，提供其 MAC 地址。
+LVS 将 Real Server 的 MAC 地址记录到 ARP 缓存中。
+2.3 静态 ARP 配置（可选）
+为了避免 ARP 缓存过期导致的延迟，或者在某些特殊网络环境下（如 ARP 被禁用），可以在 LVS 上手动配置 Real Server 的静态 ARP 条目。
+配置静态 ARP 的命令示例：
+bash
+arp -s <Real_Server_IP> <Real_Server_MAC>
+3. LVS 转发数据包的过程
+   在 DR 模型中，LVS 的数据包转发过程如下：
+
+客户端发送的数据包目标 IP 是 VIP，目标 MAC 地址是 LVS 的网卡 MAC 地址。
+数据包到达 LVS 后，LVS 的 IPVS 模块拦截数据包。
+LVS 根据负载均衡算法选择一个 Real Server。
+LVS 查询 ARP 缓存，获取选定 Real Server 的 MAC 地址（基于 RIP）。
+LVS 修改数据包的目标 MAC 地址为 Real Server 的 MAC 地址，并通过网卡发送出去。
+数据包通过二层网络（如交换机）到达目标 Real Server。
+4. 为什么 VIP 的 ARP 抑制不会影响 LVS 的工作
+   LVS 并不依赖 VIP 的 ARP 广播来获取 Real Server 的 MAC 地址。
+   LVS 只需要通过 Real Server 的 RIP 来解析 MAC 地址，而 Real Server 的 RIP 是正常广播的，不受 VIP 的 ARP 抑制配置影响。
+   因此，Real Server 的 VIP 配置为不可广播（ARP 抑制）不会影响 LVS 的正常工作。
+5. 总结
+   Real Server 的 VIP 不会广播 MAC 地址，因为 VIP 通常绑定在回环接口上，并通过 ARP 抑制配置避免了 ARP 冲突。
+   LVS 并不依赖 VIP 的 MAC 地址，而是通过 Real Server 的 RIP（Real Server IP）来解析其 MAC 地址。
+   LVS 使用 ARP 协议动态解析 RIP 对应的 MAC 地址，或者通过静态 ARP 配置直接指定 Real Server 的 MAC 地址。
+   这种设计确保了 LVS DR 模型能够高效工作，同时避免了 VIP 的 ARP 冲突问题。
+
+
+
+
+
+
+
 
 
 
