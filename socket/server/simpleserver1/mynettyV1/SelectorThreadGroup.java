@@ -37,6 +37,8 @@ public class SelectorThreadGroup {
         if (num > 0) {
             selectorThreads = new SelectorThread[num];
             // 初始化多路复用器并且运行
+            // 多个多路复用器会被创建
+            // 多个多路复用器都在等待事件的注册
             for (int i = 0; i < num; i++) {
                 selectorThreads[i] = new SelectorThread(this);
                 new Thread(selectorThreads[i]).start();
@@ -63,6 +65,7 @@ public class SelectorThreadGroup {
 //            selectorThread.lbq.add(server);
 //            selectorThread.selector.wakeup();
 //            nextSelector(server);
+            //
             nextSelectorV3(server);
         } catch (IOException ioException) {
             ioException.printStackTrace();
@@ -79,6 +82,8 @@ public class SelectorThreadGroup {
         try {
             if (channel instanceof ServerSocketChannel) {
                 // 在父事件循环组选自一个selector
+                // 这里需要在当前的boss事件循环组中找到连接需要注册的那个多路复用器
+                // 将该连接注册到该多路复用器上
                 SelectorThread nextSelectorThread = getNextSelectorThread();
                 nextSelectorThread.lbq.put(channel);
                 nextSelectorThread.selector.wakeup();
