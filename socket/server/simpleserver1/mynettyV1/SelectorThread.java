@@ -1,6 +1,7 @@
 package mynettyV1;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.channels.Channel;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
@@ -24,12 +25,12 @@ public class SelectorThread extends Thread {
      */
     public Selector selector;
 
-    public SelectThreadGroup stg;
+    public SelectorThreadGroup stg;
 
     public LinkedBlockingQueue<Channel> lbq;
 
 
-    SelectorThread(SelectThreadGroup stg) {
+    SelectorThread(SelectorThreadGroup stg) {
         try {
             this.stg = stg;
             selector = Selector.open();
@@ -42,21 +43,22 @@ public class SelectorThread extends Thread {
     // 重写run方法
     @Override
     public void run() {
-        try {
-            // 最原始版本
+
+        // 最原始版本
 //            selector = Selector.open();
 
-            // 这个方法是阻塞的 这点尤其要注意
-            /**
-             * 在单线程中 这个地方不会阻塞是因为
-             * 在服务端初始化的时候 就已经注册了一个连接事件
-             * 会将多路复用器至少有一个服务端的监听事件
-             *
-             * 但是在多线程环境上  selector都是提前初始化的  没有事件注册上来
-             * 因此这里是阻塞的
-             */
+        // 这个方法是阻塞的 这点尤其要注意
+        /**
+         * 在单线程中 这个地方不会阻塞是因为
+         * 在服务端初始化的时候 就已经注册了一个连接事件
+         * 会将多路复用器至少有一个服务端的监听事件
+         *
+         * 但是在多线程环境上  selector都是提前初始化的  没有事件注册上来
+         * 因此这里是阻塞的
+         */
 
-            while (true) {
+        while (true) {
+            try {
                 int num = selector.select();
                 // 准备好的事件进行处理
                 if (num > 0) {
@@ -77,18 +79,22 @@ public class SelectorThread extends Thread {
 
                 // process task
                 if (!lbq.isEmpty()) {
-                    Channel channel = lbq.poll();
+                    Channel channel = lbq.take();
                     if (channel instanceof ServerSocketChannel) {
                         ServerSocketChannel server = (ServerSocketChannel) channel;
                         server.register(selector, SelectionKey.OP_ACCEPT);
                     } else if (channel instanceof SocketChannel) {
                         SocketChannel client = (SocketChannel) channel;
-                        client.register(selector, SelectionKey.OP_READ);
+                        ByteBuffer buffer = ByteBuffer.allocate(4096);
+                        client.register(selector, SelectionKey.OP_READ, buffer);
+                        System.out.println(Thread.currentThread().getName() + "register client" + client.getRemoteAddress());
                     }
                 }
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
             }
-        } catch (IOException e) {
-            throw new RuntimeException(e);
         }
     }
 
@@ -96,6 +102,7 @@ public class SelectorThread extends Thread {
      * 连接事件到达 处理连接事件
      */
     public void acceptHandler(Channel channel) {
+        System.out.println(Thread.currentThread().getName() + "accept channel.....");
         ServerSocketChannel server = (ServerSocketChannel) channel;
         // 服务端获得客户端的连接的
         try {
@@ -103,7 +110,8 @@ public class SelectorThread extends Thread {
             client.configureBlocking(false);
             // 注册到某个selector上
             // 获取多路复用器
-            SelectorThread nextSelectorThread = stg.getNextSelectorThreadV2();
+//            SelectorThread nextSelectorThread = stg.nextSelector(client);
+            stg.nextSelectorV3(client);
             /**
              * 注意：这里这样写是有问题的？
              * 为什么？
@@ -130,8 +138,8 @@ public class SelectorThread extends Thread {
 //            client.register(nextSelectorThread.selector, SelectionKey.OP_ACCEPT);
             // V1.2 解决方案 将注册操作放到多路复用器的队列中去处理
             // 线性运行
-            nextSelectorThread.lbq.add(client);
-            nextSelectorThread.selector.wakeup();
+//            nextSelectorThread.lbq.add(client);
+//            nextSelectorThread.selector.wakeup();
 
         } catch (IOException e) {
             throw new RuntimeException(e);

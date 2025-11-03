@@ -24,8 +24,14 @@ public class MainThread {
      *
      */
     public static void main(String[] args) {
-        SelectThreadGroup selectThreadGroup = new SelectThreadGroup(3);
-        selectThreadGroup.bind(8080);
+//        SelectorThreadGroup selectorThreadGroup = new SelectorThreadGroup(3);
+//        selectorThreadGroup.bind(8080);
+        SelectorThreadGroup bossGroup = new SelectorThreadGroup(3);
+        SelectorThreadGroup workGroup = new SelectorThreadGroup(3);
+        bossGroup.setWorker(workGroup);
+        bossGroup.bind(9999);
+        bossGroup.bind(8888);
+        bossGroup.bind(7777);
     }
 
 
