@@ -65,7 +65,7 @@ public class Request {
         var body = new StringBuilder();
         char[] buffer = new char[1024];
 
-        // 对输入刘进行读取
+        // 对输入流进行读取
         while (dataInputStream.available() > 0) {
             bufferedReader1.read(buffer);
             body.append(buffer);
