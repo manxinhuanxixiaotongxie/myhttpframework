@@ -38,6 +38,7 @@ public class SelectorThreadGroup {
             selectorThreads = new SelectorThread[num];
             // 初始化多路复用器并且运行
             for (int i = 0; i < num; i++) {
+                // 这里已经变成了子时间循环组
                 selectorThreads[i] = new SelectorThread(this);
                 new Thread(selectorThreads[i]).start();
             }
