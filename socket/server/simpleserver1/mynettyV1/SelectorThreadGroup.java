@@ -40,6 +40,7 @@ public class SelectorThreadGroup {
             // 多个多路复用器会被创建
             // 多个多路复用器都在等待事件的注册
             for (int i = 0; i < num; i++) {
+                // 这里已经变成了子时间循环组
                 selectorThreads[i] = new SelectorThread(this);
                 new Thread(selectorThreads[i]).start();
             }
