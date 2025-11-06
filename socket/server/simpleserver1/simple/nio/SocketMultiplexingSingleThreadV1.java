@@ -260,6 +260,11 @@ public class SocketMultiplexingSingleThreadV1 {
     private void acceptHandler(SelectionKey key) throws IOException {
         ServerSocketChannel serverChannel = (ServerSocketChannel) key.channel();
         // 连接进来 表示连接socket
+        /**
+         * 在linux环境下 SelectionKey.acceptable() 返回true的本质是：
+         * serverSocketChannel绑定的底层TCP套接字（listen socket） 其内核中的等待队列非空
+         * -- 也就是有客户端完成了三次握手 连接已建立并等待服务器接受
+         */
         SocketChannel accept = serverChannel.accept();
         if (accept == null) {
             // 这里要注意 因为没有新的连接进来 会导致accept为null
