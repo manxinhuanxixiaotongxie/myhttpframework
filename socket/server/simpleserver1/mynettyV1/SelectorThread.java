@@ -17,7 +17,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 public class SelectorThread extends Thread {
 
     /**
-     * 
+     *
      * 补充：
      * 每个线程都是默认是boss 当在bossgroup里面的时候
      * bossgroup的长度是可以为多个的 并且要给bossgroup里面的每个线程都初始化一个多路复用器 并且给每个多路复用器注册一一个accept事件
@@ -88,9 +88,19 @@ public class SelectorThread extends Thread {
 
                 // process task
                 if (!lbq.isEmpty()) {
+                    // 链表解决的是多路复用器存在的问题 由于多个多个多路复用器被创建
+                    // 但是并没有连接进来 也并没有写入服务端的OP_ACCEPT事件
+                    // 导致这些被创建的多路复用器被阻塞
+                    // 链表就是为了解决 这些事件需要被注册的时候 由于多路复用器被阻塞导致的程序中断
+                    // 因此链表就是的为了注册监听事件或者是注册读取事件
+                    // 用于将事件注册到多个多路复用器上面来
                     Channel channel = lbq.take();
                     if (channel instanceof ServerSocketChannel) {
                         ServerSocketChannel server = (ServerSocketChannel) channel;
+                        // 在这个被选择的selector上注册监听事件
+                        // 有多个selector可以被选择
+                        // 对与每个多路复用器来说都可以处理连接以及处理读写
+                        // 这个链表里面的逻辑是处理注册事件
                         server.register(selector, SelectionKey.OP_ACCEPT);
                     } else if (channel instanceof SocketChannel) {
                         SocketChannel client = (SocketChannel) channel;
