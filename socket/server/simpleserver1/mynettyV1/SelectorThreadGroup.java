@@ -73,6 +73,10 @@ public class SelectorThreadGroup {
 
     /**
      *
+     *
+     * 注册
+     *
+     *
      * @param channel
      */
     public void nextSelectorV3(Channel channel) {

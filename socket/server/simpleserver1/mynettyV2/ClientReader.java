@@ -12,7 +12,7 @@ public class ClientReader implements Handler {
     }
 
     @Override
-    public void read() {
+    public void doRead() {
         ByteBuffer data = ByteBuffer.allocateDirect(4096);
 
         try {

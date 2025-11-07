@@ -1,6 +1,7 @@
 package mynettyV2;
 
 import java.net.StandardSocketOptions;
+import java.nio.channels.SelectionKey;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 
@@ -18,8 +19,12 @@ public class ServerAcceptr implements Handler{
         this.cGroup=cGroup;
     }
 
+    /**
+     * 先有连接再注册读写事件
+     *
+     */
     @Override
-    public void read() {
+    public void doRead() {
         try {
             // 事件循环组分配子事件循环
             EventLoop eventLoop = cGroup.chooser();
@@ -32,6 +37,18 @@ public class ServerAcceptr implements Handler{
             // 处理读写事件
             ClientReader cHandler = new ClientReader(client);
             // 注册事件
+            eventLoop.execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        eventLoop.name = Thread.currentThread() + eventLoop.name;
+                        System.out.println("socket...send...to " + eventLoop.name);
+                        client.register(eventLoop.selector, SelectionKey.OP_READ,cHandler);
+                    }catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                }
+            });
         }catch (Exception e){
             e.printStackTrace();
         }
