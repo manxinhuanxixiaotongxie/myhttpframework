@@ -1,19 +1,28 @@
 package netty.test;
 
+import io.netty.bootstrap.Bootstrap;
+import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.socket.SocketChannel;
+import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.util.CharsetUtil;
+import mynettyV2.EventLoopGroup;
+import mynettyV2.ServerBootStrap;
 import org.junit.Test;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.util.Objects;
 
 /**
  * 测试netty的类
@@ -283,7 +292,7 @@ public class MyNettyTest {
         thread.register(client);
 
         ChannelPipeline pipeline = client.pipeline();
-        pipeline.addLast(new MyHandler());
+        pipeline.addLast(new MyInHandler());
 
         ChannelFuture connectFuture = client.connect(new InetSocketAddress("localhost", 8080));
         ChannelFuture sync = connectFuture.sync();
@@ -298,68 +307,142 @@ public class MyNettyTest {
         System.in.read();
     }
 
+    /**
+     * 基于netty的客户端模式
+     *
+     * @throws InterruptedException
+     */
     @Test
-    public void serverMode() {
+    public void nettyClient() throws InterruptedException {
+        NioEventLoopGroup group = new NioEventLoopGroup(1);
+        Bootstrap bootstrap = new Bootstrap();
+        ChannelFuture connect = bootstrap.group(group)
+                .channel(NioSocketChannel.class)
+                .handler(new ChannelInitializer<NioSocketChannel>() {
+                    @Override
+                    protected void initChannel(NioSocketChannel ch) throws Exception {
+                        ChannelPipeline pipeline = ch.pipeline();
+                        pipeline.addLast(new MyInHandler());
+                    }
+                }).connect(new InetSocketAddress("localhost", 8080));
+        // 获取连接
+        Channel client = connect.sync().channel();
+        ByteBuf byteBuf = Unpooled.copiedBuffer("hello server".getBytes());
+        ChannelFuture send = client.writeAndFlush(byteBuf);
+        send.sync();
+        client.closeFuture().sync();
+
+    }
+
+    @Test
+    public void serverMode() throws InterruptedException {
         // 服务端测试
+        NioEventLoopGroup thread = new NioEventLoopGroup(1);
+        NioServerSocketChannel server = new NioServerSocketChannel();
+        thread.register(server);
+        ChannelPipeline pipeline = server.pipeline();
+        // 连接注册
+        pipeline.addLast(new MyAcceptHandler(thread,new ChannelInit()));
+        ChannelFuture bind = server.bind(new InetSocketAddress("localhost", 8080));
+        bind.sync()
+                .channel()
+                .closeFuture()
+                .sync();
+        System.out.println("server closed");
+
+    }
+
+    @Test
+    public void nettyServer() throws InterruptedException {
+        NioEventLoopGroup group = new NioEventLoopGroup(1);
+        ServerBootstrap serverBootstrap = new ServerBootstrap();
+        ChannelFuture bind = serverBootstrap.group(group, group)
+                .channel(NioServerSocketChannel.class)
+                .childHandler(new ChannelInitializer<NioSocketChannel>() {
+                    @Override
+                    protected void initChannel(NioSocketChannel ch) throws Exception {
+                        ChannelPipeline pipeline = ch.pipeline();
+                        pipeline.addLast(new MyInHandler());
+                    }
+                }).bind(new InetSocketAddress("localhost", 8080));
+        bind.sync().channel().closeFuture().sync();
+        System.out.println("server closed");
+
     }
 
 }
 
 
-class FixedLengthHandler extends ChannelInboundHandlerAdapter {
-    private final ByteBuf accumulatedBuf = Unpooled.buffer(); // 累积缓冲区
-    private static final int FULL_PACKAGE_LENGTH = 30; // 假设完整包长度为30字节
+class MyAcceptHandler extends ChannelInboundHandlerAdapter {
+    private final io.netty.channel.EventLoopGroup selector;
+    private final ChannelHandler handler;
 
-
-    @Override
-    public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
-        ByteBuf fixedByteBuf = (ByteBuf) msg;
-        try {
-            System.out.println("Received fixed length ByteBuf of length: " + fixedByteBuf.readableBytes());
-
-            accumulatedBuf.writeBytes(fixedByteBuf);
-
-            if (accumulatedBuf.readableBytes() >= FULL_PACKAGE_LENGTH) {
-                ByteBuf fullPackage = accumulatedBuf.readBytes(FULL_PACKAGE_LENGTH);
-                // 处理完整数据包
-                System.out.println("Processing full package of length: " + fullPackage.readableBytes());
-                ctx.fireChannelRead(fullPackage);
-            }
-
-        }catch (Exception e) {
-            System.out.println(e.getMessage());
-        }finally {
-            fixedByteBuf.release();
-        }
+    public MyAcceptHandler(io.netty.channel.EventLoopGroup thread, ChannelHandler myInHandler) {
+        this.selector = thread;
+        this.handler = myInHandler;  // ChannelInit
     }
-}
-
-/**
- *sharable异常
- */
-@ChannelHandler.Sharable
-class MyHandler extends ChannelInboundHandlerAdapter {
 
     @Override
     public void channelRegistered(ChannelHandlerContext ctx) throws Exception {
-        System.out.println("channel registered");
+        System.out.println("server registerd...");
+    }
+
+    @Override
+    public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+        //  listen  socket   accept    client
+        //  socket           R/W
+        SocketChannel client = (SocketChannel) msg;  // accept  我怎么没调用额？
+        // 2，响应式的  handler
+        ChannelPipeline p = client.pipeline();
+        p.addLast(handler);  // 1,client::pipeline[ChannelInit,]
+        // 1，注册
+        selector.register(client);
+    }
+}
+
+// 为啥要有一个inithandler，可以没有，但是MyInHandler就得设计成单例
+@ChannelHandler.Sharable
+class ChannelInit extends ChannelInboundHandlerAdapter {
+
+    @Override
+    public void channelRegistered(ChannelHandlerContext ctx) throws Exception {
+        Channel client = ctx.channel();
+        ChannelPipeline p = client.pipeline();
+        p.addLast(new MyInHandler());// 2,client::pipeline[ChannelInit,MyInHandler]
+        ctx.pipeline()
+                .remove(this);
+        // 3,client::pipeline[MyInHandler]
+    }
+//    @Override
+//    public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+//        System.out.println("haha");
+//        super.channelRead(ctx, msg);
+//    }
+}
+
+
+/*
+就是用户自己实现的，你能说让用户放弃属性的操作吗
+@ChannelHandler.Sharable  不应该被强压给coder
+ */
+class MyInHandler extends ChannelInboundHandlerAdapter {
+
+    @Override
+    public void channelRegistered(ChannelHandlerContext ctx) throws Exception {
+        System.out.println("client  registed...");
     }
 
     @Override
     public void channelActive(ChannelHandlerContext ctx) throws Exception {
-        System.out.println("client channel active");
+        System.out.println("client active...");
     }
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
         ByteBuf buf = (ByteBuf) msg;
-        // 移动指针
-        CharSequence charSequence = buf.readCharSequence(buf.readableBytes(), CharsetUtil.UTF_8);
-        System.out.println("client received data: " + charSequence);
-        // 不会移动指针
-        CharSequence charSequence1 = buf.readCharSequence(buf.readableBytes(), CharsetUtil.UTF_8);
-        System.out.println("client received data again: " + charSequence1);
-        ctx.writeAndFlush(charSequence1);
-        ctx.fireChannelRead(charSequence);
+//        CharSequence str = buf.readCharSequence(buf.readableBytes(), CharsetUtil.UTF_8);
+        CharSequence str = buf.getCharSequence(0, buf.readableBytes(), CharsetUtil.UTF_8);
+        System.out.println(str);
+        ctx.writeAndFlush(buf);
     }
 }

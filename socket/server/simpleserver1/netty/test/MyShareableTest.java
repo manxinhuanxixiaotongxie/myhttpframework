@@ -79,6 +79,11 @@ class MyNotSharableChannelInitializer extends ChannelInitializer<SocketChannel> 
     }
 }
 
+
+/**
+ * 单例
+ *
+ */
 @ChannelHandler.Sharable
 class MySharableHandler extends ChannelInboundHandlerAdapter {
     /**
