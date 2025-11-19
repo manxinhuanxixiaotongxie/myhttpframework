@@ -121,7 +121,7 @@ public class MyRPCTest {
          * 作用：代理逻辑的核心  所有通过代理对象调用的方法 都会被转发到这个接口的invoke方法中 你可以在invoke里写拦截逻辑（比如前置拦截 后置增强 异常处理等）
          *
          */
-        return (T) Proxy.newProxyInstance(classLoader, interfaces, new InvocationHandler() {
+        Object proxy = Proxy.newProxyInstance(classLoader, interfaces, new InvocationHandler() {
 
             /**
              *
@@ -222,7 +222,7 @@ public class MyRPCTest {
                 // 写入之后进行传输 交给客户端handler处理数据包
                 ChannelFuture channelFuture = clientChannel.writeAndFlush(byteBuf);
                 long requestId = header.getRequestId();
-                ResponseHandler.addCallBack(requestId,new Runnable(){
+                ResponseHandler.addCallBack(requestId, new Runnable() {
                     @Override
                     public void run() {
                         // 唤醒等待线程
@@ -244,10 +244,10 @@ public class MyRPCTest {
                 countDownLatch.await();
 
 
-
                 return null;
             }
         });
+        return (T) proxy;
 
     }
 
