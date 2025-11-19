@@ -1,13 +1,17 @@
 package myrpctest.v1;
 
 import io.netty.bootstrap.Bootstrap;
+import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import org.junit.Test;
 
@@ -24,6 +28,7 @@ import java.net.InetSocketAddress;
 import java.util.Random;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 
 /**
  *
@@ -162,6 +167,7 @@ public class MyRPCTest {
                 // 入参参数类型
                 content.setParameterTypes(parameterTypes);
 
+                // jdk序列化 将数据包序列化成字节数组
                 ByteArrayOutputStream out = new ByteArrayOutputStream();
                 ObjectOutputStream oout = new ObjectOutputStream(out);
                 oout.writeObject(content);
@@ -177,6 +183,43 @@ public class MyRPCTest {
 
                 byte[] msgHeader = out.toByteArray();
 
+                // 已经拿到了消息头、消息体
+
+                // 获取连接 连接工厂 单例 获取连接实例
+                ClientFactory factory = ClientFactory.getFactory();
+                NioSocketChannel clientChannel = factory.getClient(new InetSocketAddress("localhost", 8080));
+                ByteBuf byteBuf = PooledByteBufAllocator.DEFAULT.directBuffer(msgHeader.length + msgBody.length);
+
+                CountDownLatch countDownLatch = new CountDownLatch(1);
+
+                // 将字节数组写入bytebuf交给netty托管
+
+                byteBuf.writeBytes(msgHeader);
+                byteBuf.writeBytes(msgBody);
+
+                // 写入之后进行传输 交给客户端handler处理数据包
+                ChannelFuture channelFuture = clientChannel.writeAndFlush(byteBuf);
+                long requestId = header.getRequestId();
+                ResponseHandler.addCallBack(requestId,new Runnable(){
+                    @Override
+                    public void run() {
+                        // 唤醒等待线程
+                        countDownLatch.countDown();
+                    }
+                });
+                /**
+                 * 注意 数据包发送完成之后 这里的同步方法会结束
+                 * 但是IO是双向 数据包不光是要发出来
+                 * 还要等服务端处理完成数据包之后 返回数据包给客户端
+                 *
+                 *
+                 * 客户端执行完发送方法之后 这个同步方法会结束运行
+                 * 但是 实际上客户端有可能都需要等服务端发送数据包过来 这样才能完成度整个数据包的闭环
+                 *
+                 */
+                channelFuture.sync();
+                // 服务端数据包到来的之后 会触发回调函数 唤醒客户端阻塞
+                countDownLatch.await();
 
 
 
@@ -184,6 +227,33 @@ public class MyRPCTest {
             }
         });
 
+    }
+
+    /**
+     * 服务端代码
+     */
+    @Test
+    public void startServer() {
+        NioEventLoopGroup boss = new NioEventLoopGroup(1);
+        NioEventLoopGroup worker = new NioEventLoopGroup(1);
+        ServerBootstrap serverBootstrap = new ServerBootstrap();
+        serverBootstrap.group(boss,worker)
+                .channel(NioServerSocketChannel.class)
+                .childHandler(new ChannelInitializer<>() {
+                    @Override
+                    protected void initChannel(Channel ch) throws Exception {
+                        ChannelPipeline pipeline = ch.pipeline();
+                        // 数据包读取
+                        pipeline.addLast(new ServerRequestHandler());
+                    }
+                });
+        try {
+            ChannelFuture channelFuture = serverBootstrap.bind(8080).sync();
+            System.out.println("服务器启动成功");
+            channelFuture.channel().closeFuture().sync();
+        }catch (Exception e) {
+            System.out.println("服务器启动失败");
+        }
     }
 
 
@@ -252,10 +322,14 @@ class ClientFactory {
         factory = new ClientFactory();
     }
 
-    public ClientFactory getFactory() {
+    public static ClientFactory getFactory() {
         return factory;
     }
 
+    /**
+     * socket对应的连接
+     *
+     */
     ConcurrentHashMap<InetSocketAddress,ClientPool> outBoxes = new ConcurrentHashMap<>();
 
     /**
@@ -278,6 +352,10 @@ class ClientFactory {
             return clientPool.clients[i];
         }
         // 创建新连接
+        // 这个方法是并发访问
+        synchronized (clientPool.lock[i]) {
+            return clientPool.clients[i] = create(address);
+        }
 
 
     }
@@ -285,21 +363,45 @@ class ClientFactory {
     /**
      * 创建新连接
      *
+     * 创建连接的过程交给netty去做
+     *
      * @return
      */
-    private NioSocketChannel create(InetSocketAddress address) {
+    private  NioSocketChannel create(InetSocketAddress address) {
+        // 工作线程组
         clientWorker = new NioEventLoopGroup(1);
         // 创建新连接
+        /**
+         * netty帮我们干了哪些事情
+         * 在NIO中 我们要创建连接 使用SocketChannel.open() 然后设置非阻塞模式 然后绑定 然后连接
+         *
+         * 再遍历SocketChannel注册到Selector上 监听连接事件 在epoll模型中 其实就是epoll_ctl(EPOLL_CTL_ADD)
+         *
+         * 直到有数据包过来
+         *
+         * 那么netty帮我们做了这个事情
+         *
+         *
+         *
+         */
         Bootstrap bootstrap = new Bootstrap();
-        bootstrap.group(clientWorker)
+        ChannelFuture connect = bootstrap.group(clientWorker)
                 .channel(NioSocketChannel.class)
                 .handler(new ChannelInitializer<>() {
                     @Override
                     protected void initChannel(Channel ch) throws Exception {
                         ChannelPipeline pipeline = ch.pipeline();
-                        pipeline.addLast(new ClientResponse())
+                        // 数据包读取
+                        pipeline.addLast(new ClientResponse());
                     }
                 })
+                .connect(address);
+        try {
+            return (NioSocketChannel) connect.sync().channel();
+        }catch (Exception e) {
+            System.out.println("创建连接失败");
+            return null;
+        }
     }
 
 
@@ -307,6 +409,8 @@ class ClientFactory {
 
 /**
  * 客户端返回连接
+ *
+ * 反序列化数据包
  *
  */
 
@@ -324,18 +428,59 @@ class ClientResponse extends ChannelInboundHandlerAdapter {
             ByteArrayInputStream in = new ByteArrayInputStream(bytes);
             ObjectInputStream oin = new ObjectInputStream(in);
             MyHeader header = (MyHeader) oin.readObject();
-            // 读取客户端数据
+            // 读取客户端数据 客户端目前还是阻塞的 服务端的数据包到来之后 进行回调
             ResponseHandler.runCallBack(header.requestId);
+
+//            if (byteBuf.readableBytes() >=header.getDataLen()) {
+//                byte[] data = new byte[(int) header.getDataLen()];
+//                byteBuf.readBytes(data);
+//                ByteArrayInputStream din = new ByteArrayInputStream(data);
+//                ObjectInputStream doin = new ObjectInputStream(din);
+//                MyContent content = (MyContent) doin.readObject();
+//                System.out.println(content.getName());
+//            }
+        }
+        super.channelRead(ctx, msg);
+    }
+}
+
+/**
+ * 服务端接受数据包
+ *
+ */
+class ServerRequestHandler extends ChannelInboundHandlerAdapter {
+
+    /**
+     * 读取数据包
+     * @param ctx
+     * @param msg
+     * @throws Exception
+     */
+    @Override
+    public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+        ByteBuf byteBuf = (ByteBuf) msg;
+        // 返回的数据包
+        ByteBuf sendBuf = byteBuf.copy();
+        if (byteBuf.readableBytes() >=110) {
+            byte[] bytes = new byte[110];
+            byteBuf.readBytes(bytes);
+            // 反序列化
+            ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(bytes);
+            ObjectInputStream objectInputStream = new ObjectInputStream(byteArrayInputStream);
+            // 获取头信息
+            MyHeader header = (MyHeader) objectInputStream.readObject();
             if (byteBuf.readableBytes() >=header.getDataLen()) {
                 byte[] data = new byte[(int) header.getDataLen()];
                 byteBuf.readBytes(data);
                 ByteArrayInputStream din = new ByteArrayInputStream(data);
                 ObjectInputStream doin = new ObjectInputStream(din);
                 MyContent content = (MyContent) doin.readObject();
-                System.out.println(content.getName());
+                System.out.println("服务端收到数据包 来自调用方："+content.getName()+" 方法："+content.getMethodName());
             }
+            // 处理完成数据包 进行回传
+            ChannelFuture channelFuture = ctx.writeAndFlush(sendBuf);
+            channelFuture.sync();
         }
-        super.channelRead(ctx, msg);
     }
 }
 
@@ -361,7 +506,7 @@ class ResponseHandler {
         removeCallBack(requestId);
     }
 
-    public void removeCallBack(long requestId) {
+    public static void removeCallBack(long requestId) {
         mapping.remove(requestId);
     }
 

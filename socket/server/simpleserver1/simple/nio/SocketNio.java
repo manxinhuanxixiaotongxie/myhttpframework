@@ -8,6 +8,11 @@ import java.nio.channels.SocketChannel;
 import java.util.LinkedList;
 import java.util.List;
 
+/**
+ * 服务端代码
+ *
+ *
+ */
 public class SocketNio {
     ServerSocketChannel serverSocketChannel = null;
 
@@ -27,6 +32,13 @@ public class SocketNio {
     }
 
 
+    /**
+     * accept时代
+     *
+     * 轮询发生在用户态
+     *
+     * @throws IOException
+     */
     public void accept() throws IOException {
         // 非阻塞
         SocketChannel accept = serverSocketChannel.accept();

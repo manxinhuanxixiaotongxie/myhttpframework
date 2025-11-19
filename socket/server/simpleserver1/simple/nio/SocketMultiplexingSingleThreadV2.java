@@ -11,6 +11,9 @@ import java.util.Iterator;
 import java.util.Set;
 
 /**
+ *
+ * 服务端代码
+ *
  * 多路复用器多线程版本测试
  *
  *
@@ -46,6 +49,8 @@ public class SocketMultiplexingSingleThreadV2 {
 
     /**
      * 监听端口
+     *
+     * 服务端
      *
      * @param port
      */
