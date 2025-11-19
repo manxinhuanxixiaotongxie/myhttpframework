@@ -65,6 +65,28 @@ public class MyRPCTest {
     @Test
     public void consumer() {
 
+        new Thread(() -> {
+            startServer();
+        });
+        System.out.println("服务端启动");
+        int size = 20;
+        Thread[] threads = new Thread[size];
+        for (int i = 0; i < size; i++) {
+            threads[i] = new Thread(() -> {
+                Car car = proxyGet(Car.class);
+                car.drive("hello");
+            });
+        }
+        for (Thread thread : threads) {
+            thread.start();
+        }
+
+        try {
+            System.in.read();
+        }catch (Exception e) {
+            e.printStackTrace();
+        }
+
 
     }
 
